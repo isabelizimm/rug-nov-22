@@ -1,0 +1,175 @@
+---
+title: "Version, deploy, and monitor your model with vetiver in Python"
+---
+
+## The MLOps cycle
+
+![](https://vetiver.rstudio.com/images/ml_ops_cycle.png)
+
+Data scientists have effective tools that they ❤️ to:
+
+-   collect data
+
+-   prepare, manipulate, refine data
+
+-   train models
+
+There is a lack 😩 of effective tools (especially open source) to:
+
+-   put models into production
+
+-   monitor model performance
+
+-   trigger retraining
+
+## What is vetiver? <https://vetiver.rstudio.com/>
+
+> *Vetiver, the oil of tranquility, is used as a stabilizing ingredient in perfumery to preserve more volatile fragrances.*
+
+The **goal** of vetiver is to provide fluent tooling to **version, deploy, and monitor** a trained model.
+
+## Build a model
+
+```{python}
+import pandas as pd
+import numpy as np
+from sklearn import model_selection, preprocessing, pipeline
+from sklearn.ensemble import RandomForestRegressor
+import rsconnect
+from vetiver import vetiver_pin_write, vetiver_endpoint
+
+import os
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
+
+api_key = os.getenv("API_KEY")
+rsc_url = os.getenv("RSC_URL")
+np.random.seed(500)
+```
+
+```{python}
+raw = pd.read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-03-02/youtube.csv')
+df = pd.DataFrame(raw)
+```
+
+```{python}
+df = df[["like_count", "funny", "show_product_quickly", "patriotic", \
+    "celebrity", "danger", "animals"]].dropna()
+
+df
+```
+
+```{python}
+X, y = df.iloc[:,1:],df['like_count']
+X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y,test_size=0.2)
+
+le = preprocessing.OrdinalEncoder().fit(X)
+rf = RandomForestRegressor().fit(le.transform(X_train), y_train)
+```
+
+```{python}
+rf_pipe = pipeline.Pipeline([('label_encoder',le), ('random_forest', rf)])
+```
+
+## Version and deploy a model
+
+Create a deployable model object:
+
+```{python}
+import vetiver
+
+v = vetiver.VetiverModel(
+    rf_pipe, 
+    ptype_data=X_train, 
+    model_name = "superbowl_rf"
+)
+```
+
+Version and share the model:
+
+```{python}
+import pins
+
+board = pins.board_folder(path = ".", allow_pickle_read=True)
+
+# board = pins.board_rsconnect(api_key=api_key, server_url=rsc_url, allow_pickle_read=True) 
+
+vetiver_pin_write(board, v)
+```
+
+Document the model: <https://vetiver.rstudio.com/learn-more/model-card.html>
+
+Deploy model as a REST API:
+
+```{python}
+app = vetiver.VetiverAPI(v, check_ptype=True)
+app.run()
+```
+
+```{python}
+# import rsconnect
+# connect_server = rsconnect.api.RSConnectServer(url = rsc_url, api_key = api_key)
+
+# vetiver.deploy_rsconnect(
+#     connect_server = connect_server, 
+#     board = board, 
+#     pin_name = "isabel.zimmerman/scooby-doo", 
+# )
+```
+
+
+## Predict from a model
+
+Predict for remote vetiver model:
+
+
+```{python}
+connect_endpoint = vetiver_endpoint("https://colorado.rstudio.com/rsc/ads/predict")
+```
+
+Generate some new data:
+
+```{python}
+new_ads = pd.DataFrame({
+  'funny': np.random.randint(0, 2, size=(10,)),
+  'show_product_quickly': np.random.randint(0, 2, size=(10,)),
+  'patriotic': np.random.randint(0, 2, size=(10,)),
+  'celebrity': np.random.randint(0, 2, size=(10,)),
+  'danger': np.random.randint(0, 2, size=(10,)), 
+  'animals': np.random.randint(0, 2, size=(10,))
+  }
+)
+new_ads
+```
+
+```{python}
+response = vetiver.predict(data = monitor_ads.drop(columns=["date"]), endpoint = connect_endpoint)
+response
+```
+
+## Monitoring support
+
+```{python}
+from datetime import timedelta
+from sklearn import metrics
+
+monitor_ads = pd.read_csv('monitor_ads.csv')
+
+monitor_ads["preds"] = v.model.predict(monitor_ads.drop(columns=["like_count", "date"]))
+
+metric_set = [metrics.mean_absolute_error, metrics.mean_squared_error]
+
+ads_metrics = vetiver.compute_metrics(data = monitor_ads, 
+                    date_var="date", 
+                    period = timedelta(weeks = 1), 
+                    metric_set=metric_set, 
+                    truth="like_count", 
+                    estimate="preds")
+ads_metrics
+```
+
+```{python}
+m = vetiver.plot_metrics(ads_metrics)
+m.update_yaxes(matches=None)
+m.show()
+```
